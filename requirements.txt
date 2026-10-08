@@ -1,0 +1,6 @@
+duckdb==1.4.1
+
+# Test-only dependency. Kept in the single requirements file (rather than a
+# separate dev file) so the shipped image can run the full test suite with
+# docker run --rm --entrypoint python <image> -m pytest tests -q.
+pytest==9.1.1

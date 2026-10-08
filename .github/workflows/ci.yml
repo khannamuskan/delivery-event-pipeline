@@ -1,0 +1,58 @@
+name: ci
+
+# Runs the exact submission command from the brief, plus the test suite, inside
+# the real Docker image. This is also how the Docker build is verified: the
+# machine used for development had no WSL2 and no administrator rights, so a
+# local `docker build` was not possible there.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t data-engineer-assessment .
+
+      - name: Run pipeline (the command from the brief)
+        run: docker run --rm -e SEED=1234 -e ORDERS=5000 data-engineer-assessment
+
+      - name: Run pipeline on unseen seeds
+        run: |
+          for seed in 7 99 2026 31337; do
+            echo "::group::seed $seed"
+            docker run --rm -e SEED=$seed -e ORDERS=2000 data-engineer-assessment
+            echo "::endgroup::"
+          done
+
+      - name: Run test suite inside the image
+        run: |
+          docker run --rm --entrypoint python data-engineer-assessment \
+            -m pytest tests -q
+
+      - name: Prove determinism across two separate container runs
+        run: |
+          mkdir -p out_a out_b
+          docker run --rm -e SEED=4242 -e ORDERS=3000 \
+            -v "$PWD/out_a:/app/output" data-engineer-assessment > /dev/null
+          docker run --rm -e SEED=4242 -e ORDERS=3000 \
+            -v "$PWD/out_b:/app/output" data-engineer-assessment > /dev/null
+          diff out_a/report.json out_b/report.json
+          echo "report.json identical across two independent container runs"
+
+  tests-no-docker:
+    # The same suite on a bare interpreter, to catch anything that only works
+    # because of the image.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: pytest tests -q
