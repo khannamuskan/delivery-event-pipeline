@@ -387,25 +387,25 @@ The generator can be asked for the ground truth it simulated
 
 ### A note on Docker
 
-Docker could not be installed on the machine used for development — it is a managed
-Windows device without administrator rights and without WSL2, and `wsl --install`
-requires elevation. Rather than claim an unverified build, here is exactly what was
-done to make the containerised run trustworthy:
+The machine used for development is a managed Windows device without administrator
+rights and without WSL2, so Docker could not be installed locally. Rather than ship an
+unverified build, the container is verified in CI instead
+(`.github/workflows/ci.yml`), which on every push does a real `docker build` and then:
 
-- The `Dockerfile` is **unmodified** from the starter, so the build is the one the
-  brief already specifies.
-- The only dependency change is `pytest` (pinned, and present on PyPI with wheels for
-  Python 3.12), added so the suite can run inside the image.
-- Everything was validated on Python 3.12 — the same minor version the image is built
-  from — in a virtual environment restricted to the image's declared dependencies.
-- The code contains no OS-specific behaviour: only `pathlib`, no shell calls, SQL model
-  files referenced by explicit name (safe on a case-sensitive filesystem), and the
-  Bronze reader trims stray `CR` so it is agnostic to CRLF vs LF. Windows is in fact the
-  harsher of the two cases here, since the generator writes CRLF there and LF in the
-  image.
-- `main.py` resolves `/app` inside the container and the repository directory outside
-  it, so the same entrypoint works in both.
-- `.github/workflows/ci.yml` runs `docker build`, the exact `docker run` command from
-  the brief, four additional unseen seeds, the test suite inside the image, and a
-  two-container determinism diff. On any machine or CI runner with Docker this is a
-  one-command verification.
+- runs the exact `docker run` command from the brief (`SEED=1234 ORDERS=5000`);
+- runs four further seeds the code has never been tuned against (7, 99, 2026, 31337);
+- runs the full test suite **inside the image** — 31 passed;
+- runs the same seed in two independent containers with separate mounted output
+  directories and diffs the resulting `report.json`, which is identical.
+
+All of the above is green. The `Dockerfile` and `run.sh` are unmodified from the
+starter; the only dependency change is a pinned `pytest`, added so the suite can run
+inside the image.
+
+Locally, the same guarantees were checked a second way: `main.py` and all 31 tests were
+re-run in a clean virtual environment containing *only* what `requirements.txt`
+installs, proving the image has no undeclared dependency. The code has no OS-specific
+behaviour — `pathlib` only, no shell calls, SQL models referenced by explicit name so a
+case-sensitive filesystem is safe, and the Bronze reader trims stray `CR` so it is
+agnostic to CRLF vs LF. `main.py` resolves `/app` inside the container and the
+repository directory outside it, so one entrypoint serves both.
