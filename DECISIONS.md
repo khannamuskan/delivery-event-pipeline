@@ -2,7 +2,7 @@
 
 This document explains *why* the pipeline is built the way it is. Where a choice had
 a credible alternative, the alternative and the reason it was rejected are recorded
-too — the rejected options are usually more informative than the chosen one.
+too, since the rejected options are usually more informative than the chosen one.
 
 ---
 
@@ -17,7 +17,7 @@ The workload is a single-node, batch, set-oriented transformation: read a JSONL 
 apply row-level validation, deduplicate on two different keys, aggregate to an order
 grain, aggregate again to a daily grain, write Parquet. Every step is naturally
 expressible as a relational operation. There is no iterative computation, no
-per-record external I/O, and no model training — nothing that actually wants an
+per-record external I/O, and no model training. Nothing here wants an
 imperative loop.
 
 ### Why DuckDB
@@ -56,8 +56,8 @@ imperative loop.
 | Option | Why not |
 | --- | --- |
 | **Pandas** | Whole dataset in memory; no spill; silent dtype coercion (`NaN` for missing timestamps conflates "absent" with "invalid"); groupby-apply chains hide business rules in imperative code. |
-| **Polars** | Genuinely excellent and a close second — lazy, vectorised, streaming. Rejected because the logic is relational and the expression API is still less reviewable by non-Python data people than SQL, and it would add a dependency to do what the pinned one already does. |
-| **PySpark** | The right answer at 100M+ events/day (see *Scaling*), the wrong answer here. A JVM, a session startup cost measured in tens of seconds, and shuffle semantics to reason about — all to process a file that fits comfortably on one core. Reaching for a distributed engine at this volume is a judgement error, not a strength. |
+| **Polars** | Genuinely excellent and a close second: lazy, vectorised, streaming. Rejected because the logic is relational and the expression API is still less reviewable by non-Python data people than SQL, and it would add a dependency to do what the pinned one already does. |
+| **PySpark** | The right answer at 100M+ events/day (see *Scaling*), the wrong answer here. A JVM, a session startup cost measured in tens of seconds, and shuffle semantics to reason about, all to process a file that fits comfortably on one core. Reaching for a distributed engine at this volume is a judgement error, not a strength. |
 | **Plain Python + `json` + dicts** | Maximum control, but every aggregate becomes hand-rolled state management, and correctness then depends on code review rather than on well-understood relational semantics. |
 
 ### How the code is organised
@@ -80,7 +80,7 @@ candidate/
 This is a deliberately "dbt-lite" structure. Every transformation is a numbered,
 reviewable SQL file; `pipeline.py` is a runner. The consequence is that migrating
 this to dbt + Snowflake/BigQuery/Databricks later is mostly a matter of moving the
-files and adding `ref()` calls — the logic does not need rewriting. Thresholds that a
+files and adding `ref()` calls; the logic does not need rewriting. Thresholds that a
 business owner might want to change (the 5-minute lateness window, the set of valid
 event types, the dedup key columns) live in `config.py` rather than being scattered
 through SQL as literals.
@@ -94,7 +94,7 @@ removes the ways it is normally lost:
   locale.
 - Timestamps are cast to naive UTC immediately (`TIMESTAMPTZ -> TIMESTAMP`), so no
   downstream operation can reintroduce an offset.
-- No artifact contains a wall-clock value — no `load_timestamp`, no `generated_at` in
+- No artifact contains a wall-clock value: no `load_timestamp`, no `generated_at` in
   `report.json`. Run metadata belongs in logs, not in a dataset that is supposed to be
   comparable across runs.
 - Every `COPY ... TO ... PARQUET` has an explicit **total** `ORDER BY`, so physical
@@ -116,7 +116,7 @@ fails the build.
 The stream contains two kinds of repetition with two different root causes, and
 collapsing them with one rule gets the answer wrong.
 
-**1. Exact duplicates — a transport problem.**
+**1. Exact duplicates: a transport problem.**
 The same logical event delivered more than once (at-least-once delivery, consumer
 replay after an offset commit failure, a retried HTTP POST). The payloads are
 byte-identical, including `event_id`.
@@ -126,12 +126,12 @@ byte-identical, including `event_id`.
 md5(_raw_payload) ASC) = 1`.
 
 `event_id` is the producer's idempotency key and it is the strongest signal
-available — two rows carrying the same one are the same event by definition. The
+available, and two rows carrying the same one are the same event by definition. The
 tie-break on `ingested_at` keeps the first delivery; the hash of the raw payload is a
 final deterministic fallback so that even two rows identical in every field resolve
 the same way on every run.
 
-**2. Semantic duplicates — a producer problem.**
+**2. Semantic duplicates: a producer problem.**
 The same real-world occurrence emitted twice with *different* `event_id`s: a service
 retried after a timeout it had actually processed, or two instances of a producer both
 published. `event_id` cannot see these at all.
@@ -140,23 +140,23 @@ published. `event_id` cannot see these at all.
 *Rule:* `row_number() OVER (PARTITION BY <that key> ORDER BY ingested_at ASC,
 event_id ASC) = 1`.
 
-The deduplication runs in that order — exact first, then semantic — because the
+The deduplication runs in that order, exact first and then semantic, because the
 cheaper, higher-confidence rule should reduce the input to the more expensive,
 judgement-based one.
 
-### Why the business key is that wide — the trap in this dataset
+### Why the business key is that wide: the trap in this dataset
 
 The obvious-looking key is `(order_id, event_type)`: "an order is only created once,
 only delivered once." **It is wrong, and it is the single most damaging mistake
 available in this assignment.**
 
-A delivery order can legitimately be allocated to a rider several times — the first
+A delivery order can legitimately be allocated to a rider several times: the first
 rider times out or declines, and the order is reallocated. Those are *multiple genuine
 `RIDER_ALLOCATED` events for one order*, and they are the entire basis of the required
 `allocation_attempts` and `unique_riders` columns. Deduplicating on
 `(order_id, event_type)` would silently flatten every reallocation to one, pin
 `allocation_attempts` at exactly 1 for every allocated order, and destroy
-`avg_allocation_attempts` in the daily metrics — while the pipeline reported success.
+`avg_allocation_attempts` in the daily metrics, while the pipeline reported success.
 
 Including `event_time`, `rider_id` and `supplier_id` in the key means two allocation
 attempts to different riders, or to the same rider at different times, are correctly
@@ -187,7 +187,7 @@ raw_events = silver_events + rejected_events + duplicate_events_removed
 ```
 
 Every row that entered is either published, quarantined, or explicitly removed as a
-duplicate — nothing silently disappears. The assertion raises and fails the run if it
+duplicate, and nothing silently disappears. The assertion raises and fails the run if it
 does not hold, so a future change that drops rows somewhere unexpected cannot ship
 quietly.
 
@@ -215,7 +215,7 @@ code, and the source line number. Three reasons:
 
 Bronze parses nothing and judges nothing. It lands one row per input line as raw text,
 plus field extractions that are `NULL`-guarded by `json_valid()`. A row of corrupt JSON
-becomes a Bronze row with `_is_valid_json = false` — **not** a parser exception that
+becomes a Bronze row with `_is_valid_json = false`, **not** a parser exception that
 kills the job.
 
 This matters: `read_json_auto` would either fail on malformed lines or silently infer a
@@ -260,7 +260,7 @@ Where a denominator is zero, the rate is `NULL`, not `0.0` (`nullif(denominator,
 measure". Writing zero here is how a dashboard ends up showing a dramatic, entirely
 fictional drop in acceptance rate. Orders with no parseable `created_at` cannot be
 attributed to a reporting day, so they are excluded from daily metrics and counted
-explicitly as `orders_missing_created_at` in the report — excluded, but never hidden.
+explicitly as `orders_missing_created_at` in the report: excluded, but never hidden.
 
 ---
 
@@ -269,14 +269,14 @@ explicitly as `orders_missing_created_at` in the report — excluded, but never 
 ### Everything is event-time semantics; file order is never consulted
 
 The order of lines in the file is an artefact of how events were transported. Arrival
-order is also not the truth — a late record describes something that happened earlier,
-not something that happened later. So every value in `gold/orders.parquet` is derived
-from `event_time`.
+order is also not the truth, because a late record describes something that happened
+earlier, not something that happened later. So every value in `gold/orders.parquet` is
+derived from `event_time`.
 
 **Milestones** are `min(event_time) FILTER (WHERE event_type = '<TYPE>')`. The first
 time something happened is a well-defined, order-independent fact. Because it is an
 aggregate over the whole order, a record arriving two hours late lands in exactly the
-right place with no special-case logic — out-of-order handling falls out of the model
+right place with no special-case logic. Out-of-order handling falls out of the model
 rather than being bolted onto it.
 
 **Missing milestones stay `NULL`.** `STARTED_PICKUP` is genuinely absent on some
@@ -298,7 +298,7 @@ present, falling back to the earliest event carrying one.
 **`supplier_id`** is treated as *slowly changing within the order*: it is reassigned on
 each allocation attempt, so the correct answer is the **latest** value by event time
 (`max_by(supplier_id, order_key)`), not the one the order was created with. Taking the
-creation-time supplier would attribute a reallocated order to the wrong partner — a
+creation-time supplier would attribute a reallocated order to the wrong partner, a
 mistake with commercial consequences.
 
 **`final_status`** is decided by the terminal event with the latest `event_time`:
@@ -313,7 +313,7 @@ CASE
 END
 ```
 
-`OPEN` is the honest default for an order with no terminal event — it may still be in
+`OPEN` is the honest default for an order with no terminal event. It may still be in
 flight, or its terminal event may not have arrived yet; either way the pipeline should
 not guess. The both-terminals branch does not occur in this dataset, but a real stream
 eventually produces it (a cancellation racing a delivery confirmation), so the rule is
@@ -327,7 +327,7 @@ Where a single value must be chosen from several candidate events (`city`,
 `supplier_id`), the choice is ordered by the composite struct
 `{event_time, lifecycle_rank, event_id}`. `lifecycle_rank` breaks ties between
 different event types that share a timestamp using the natural lifecycle order, and
-`event_id` — unique after deduplication — makes the ordering **total**. Without a total
+`event_id`, unique after deduplication, makes the ordering **total**. Without a total
 order, two equally-ranked candidates could be returned in either order depending on
 execution plan, and the output would stop being reproducible.
 
@@ -337,7 +337,7 @@ The generator exposes `include_truth=True`, which returns the exact per-order ou
 it simulated. `tests/test_against_truth.py` uses that as an **oracle**: it runs the
 real pipeline across five seeds the implementation was never tuned against and
 compares all twelve Gold columns, order by order, against ground truth. It also
-asserts that the Silver event set is *identical* — not merely equal in count — to the
+asserts that the Silver event set is *identical*, not merely equal in count, to the
 generator's canonical event set, which is the strongest available statement that
 deduplication is neither too aggressive (reallocations lost) nor too timid (injected
 duplicates surviving).
@@ -356,12 +356,12 @@ row per order, value domains, status/milestone consistency, count reconciliation
 
 ### What actually changes at 100M+ events/day
 
-100M events/day is roughly 1,200 events/second average and realistically 5–10k/second
-at peak — a few hundred GB/day. The transformation logic above stays correct; what
+100M events/day is roughly 1,200 events/second average and realistically 5-10k/second
+at peak, a few hundred GB/day. The transformation logic above stays correct; what
 breaks is the *execution model*. Specifically: the single-file read, the global window
 functions over the entire history, and the full-rebuild-every-run pattern.
 
-### 1. Ingestion — a log, partitioned by `order_id`
+### 1. Ingestion: a log, partitioned by `order_id`
 
 Kafka (or Kinesis/Pub-Sub) with **`order_id` as the partition key**. That one choice
 does a lot of work: all events for an order land on the same partition and are
@@ -371,24 +371,24 @@ shuffles. Producers publish Avro/Protobuf against a **schema registry** with
 compatibility enforcement, so `UNKNOWN_EVENT_TYPE` and malformed payloads are rejected
 at the edge rather than discovered three layers downstream.
 
-### 2. Bronze — an open table format, not loose Parquet files
+### 2. Bronze: an open table format, not loose Parquet files
 
 Land raw events to object storage as **Iceberg** (or Delta) partitioned by
 `event_date`, ideally with an hour sub-partition at this volume. The open table format
 buys the things loose Parquet cannot do: atomic commits, schema evolution, snapshot
-isolation for readers, time travel for debugging a bad batch, and — critically —
+isolation for readers, time travel for debugging a bad batch, and most importantly
 **`MERGE INTO` for idempotent restatement of a single partition**. Compaction of small
 files becomes a scheduled maintenance job, because at 1,200 events/second the
 small-file problem arrives quickly.
 
-### 3. Deduplication — bounded keyed state, not a global window
+### 3. Deduplication: bounded keyed state, not a global window
 
 `row_number() OVER (PARTITION BY event_id)` across all history is `O(all data)` and
 becomes untenable. Replace it with:
 
 - **Streaming:** Flink or Spark Structured Streaming keyed by `order_id`, holding a
   `MapState` of seen `event_id`s and business keys with a **TTL** sized to the
-  realistic duplicate window (say 24–48 hours, derived from observed
+  realistic duplicate window (say 24 to 48 hours, derived from observed
   `ingested_at - event_time` percentiles). Watermarks drive state eviction so memory
   is bounded.
 - **Batch:** dedup *within partition* against a compact `(event_id, event_date)` index
@@ -397,7 +397,7 @@ becomes untenable. Replace it with:
 A probabilistic pre-filter (Bloom/HyperLogLog) in front of the exact check cheaply
 removes the overwhelming majority of non-duplicates before the expensive lookup.
 
-### 4. Late data — side outputs and targeted restatement
+### 4. Late data: side outputs and targeted restatement
 
 A watermark with an allowed-lateness bound (say 15 minutes) covers the common case.
 Events later than that go to a **side output** rather than being dropped, and a
@@ -405,9 +405,9 @@ scheduled job replays them with `MERGE INTO` against the specific affected `even
 partitions. Because the Gold aggregates are deterministic functions of the Silver
 partition, restating a day is a safe, repeatable operation rather than a risky manual
 fix. The lateness threshold itself should be derived from the observed distribution and
-alerted on when it shifts — it is a property of the upstream system, not a constant.
+alerted on when it shifts. It is a property of the upstream system, not a constant.
 
-### 5. Silver and Gold — incremental, not full rebuild
+### 5. Silver and Gold: incremental, not full rebuild
 
 - `silver_events` becomes an append + merge into an Iceberg table partitioned by
   `event_date`, clustered/sorted by `order_id` so order reconstruction reads contiguous
@@ -417,17 +417,17 @@ alerted on when it shifts — it is a property of the upstream system, not a con
   reach a terminal state plus a grace period, then frozen.
 - `daily_metrics` is recomputed only for dates whose partitions changed.
 - Long-lived orders are the thing to watch: an order that never terminates keeps state
-  alive forever. It needs an explicit expiry policy and a "stuck orders" alert — which
+  alive forever. It needs an explicit expiry policy and a "stuck orders" alert, which
   is a genuine operational signal, not just a technical cleanup.
 
 ### 6. Compute
 
 Spark or Flink on Kubernetes (EMR/Databricks/Dataproc) with autoscaling, or
 Snowflake/BigQuery if the organisation is warehouse-centric. The SQL models here would
-migrate largely intact — the dbt-lite file layout is deliberately one `ref()` away from
-being a dbt project. Importantly, **DuckDB does not necessarily disappear**: it remains
-an excellent engine for per-partition tasks, local development, and CI, where spinning
-up a cluster to test a transformation is pure overhead.
+migrate largely intact, since the dbt-lite file layout is deliberately one `ref()` away
+from being a dbt project. Importantly, **DuckDB does not necessarily disappear**: it
+remains an excellent engine for per-partition tasks, local development, and CI, where
+spinning up a cluster to test a transformation is pure overhead.
 
 ### 7. Orchestration, testing and observability
 
@@ -440,13 +440,13 @@ up a cluster to test a transformation is pure overhead.
 - **Monitoring on data, not just on jobs**: rejection rate by reason code, duplicate
   rate split by exact vs semantic, late-event percentiles, freshness/lag per partition,
   and distribution drift on `allocation_attempts`. A green DAG with a quietly doubled
-  rejection rate is a failure nobody gets paged for — those thresholds should page.
+  rejection rate is a failure nobody gets paged for, and those thresholds should page.
 - **Data contracts with producer teams**, versioned in the schema registry, so schema
   changes are negotiated rather than discovered.
 
 ### 8. Cost and layout
 
-Partition by `event_date`, sort/cluster by `order_id`, compact to ~128–512 MB files,
+Partition by `event_date`, sort/cluster by `order_id`, compact to 128-512 MB files,
 and keep Zstd compression. Most of the cost at this volume is scan volume and small
 files; both are layout problems, not compute problems. Tier old Bronze partitions to
 cold storage with a retention policy, and keep Silver as the replay source of record.
@@ -456,5 +456,5 @@ cold storage with a retention policy, and keep Silver as the replay source of re
 The semantics. Event-time milestones, two-key deduplication, quarantine-don't-drop,
 `NULL` over fabricated zeros, and deterministic tie-breaking are correctness
 properties, not scale properties. They would be implemented with different machinery
-and should produce the same answers — which is exactly why they are specified as SQL
+and should produce the same answers, which is exactly why they are specified as SQL
 and verified against an oracle rather than embedded in one engine's API.

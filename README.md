@@ -266,7 +266,7 @@ logic lives in numbered, reviewable SQL model files and `candidate/pipeline.py` 
 thin runner. Bronze lands every input line losslessly and judges nothing. Silver types
 and validates each row, routes failures to a **quarantine** table with a reason code
 instead of dropping them, and then removes duplicates in two stages using two different
-keys — `event_id` for transport-level exact duplicates, and a wide business key for
+keys: `event_id` for transport-level exact duplicates, and a wide business key for
 producer-level semantic duplicates. Gold reconstructs the order lifecycle purely from
 `event_time`, so late and out-of-order arrival need no special handling.
 
@@ -306,11 +306,11 @@ The `Dockerfile`, `run.sh`, `schemas/` and the generator are unchanged. Outside
 | `output/quarantine/rejected_events.parquet` | one rejected row | **extra, not required**: reason code + original payload, so bad data is diagnosable and replayable |
 | `output/gold/orders.parquet` | one row per order | all required columns, plus `event_count` |
 | `output/gold/daily_metrics.parquet` | one row per creation date | all required columns |
-| `output/report.json` | — | all required fields, plus duplicate split by class, rejections by reason, `orders_missing_created_at`, `late_event_rate` |
+| `output/report.json` | one file | all required fields, plus duplicate split by class, rejections by reason, `orders_missing_created_at`, `late_event_rate` |
 
 ## Run
 
-As specified in the brief — no manual setup required:
+As specified in the brief. No manual setup required:
 
 ```bash
 docker build -t data-engineer-assessment .
@@ -357,18 +357,18 @@ The generator can be asked for the ground truth it simulated
 (`generate_dataset(..., include_truth=True)`). The test suite uses that as an
 **oracle** rather than asserting on numbers I looked at once:
 
-- **`test_against_truth.py`** — for five seeds the implementation was never tuned
+- **`test_against_truth.py`**: for five seeds the implementation was never tuned
   against, every Gold order is compared field by field against the true outcome, and
   the Silver event *set* is compared for identity against the generator's canonical
   event set. That second assertion is the strongest available check on deduplication:
   if the dedup key were too wide, injected duplicates would survive; if it were too
   narrow, legitimate reallocation events would disappear. Both fail here.
-- **`test_contract.py`** — files exist, required columns present, exactly one row per
+- **`test_contract.py`**: files exist, required columns present, exactly one row per
   `order_id`, `final_status` in the allowed domain, rates within `[0, 1]` or `NULL`,
   status never contradicting its milestones, `unique_riders <= allocation_attempts`,
   Bronze lossless, quarantine rows always carrying a reason and payload, and the
   reconciliation invariant `raw = silver + rejected + duplicates`.
-- **`test_determinism.py`** — the same seed run twice must produce identical content
+- **`test_determinism.py`**: the same seed run twice must produce identical content
   hashes *and* identical physical row order, and `report.json` must contain no
   wall-clock field. A control test asserts different seeds *do* differ, so the suite
   cannot pass by ignoring its input.
@@ -394,7 +394,7 @@ unverified build, the container is verified in CI instead
 
 - runs the exact `docker run` command from the brief (`SEED=1234 ORDERS=5000`);
 - runs four further seeds the code has never been tuned against (7, 99, 2026, 31337);
-- runs the full test suite **inside the image** — 31 passed;
+- runs the full test suite inside the image (31 passed);
 - runs the same seed in two independent containers with separate mounted output
   directories and diffs the resulting `report.json`, which is identical.
 
@@ -402,10 +402,8 @@ All of the above is green. The `Dockerfile` and `run.sh` are unmodified from the
 starter; the only dependency change is a pinned `pytest`, added so the suite can run
 inside the image.
 
-Locally, the same guarantees were checked a second way: `main.py` and all 31 tests were
-re-run in a clean virtual environment containing *only* what `requirements.txt`
-installs, proving the image has no undeclared dependency. The code has no OS-specific
-behaviour — `pathlib` only, no shell calls, SQL models referenced by explicit name so a
-case-sensitive filesystem is safe, and the Bronze reader trims stray `CR` so it is
-agnostic to CRLF vs LF. `main.py` resolves `/app` inside the container and the
-repository directory outside it, so one entrypoint serves both.
+There is nothing OS-specific in the code: `pathlib` only, no shell calls, and SQL
+models referenced by explicit filename so a case-sensitive filesystem is safe. The
+Bronze reader trims a stray `CR` if present, which makes it agnostic to CRLF vs LF, and
+`main.py` resolves `/app` inside the container and the repository directory outside it,
+so one entrypoint serves both.
